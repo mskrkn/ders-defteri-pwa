@@ -1,4 +1,4 @@
-const CACHE = 'ders-defteri-v2';
+const CACHE = 'ders-defteri-v3';
 const ASSETS = [
   './',
   './index.html',
