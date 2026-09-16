@@ -15,7 +15,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Zilla+Slab:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
   :root {
     --paper: #f6f4ee;
@@ -380,21 +379,13 @@ const STORAGE_STUDENTS = 'dd_students_v1';
 const STORAGE_ATTEND = 'dd_attendance_v1';
 const STORAGE_SETTINGS = 'dd_settings_v1';
 const STORAGE_UPDATED_AT = 'dd_updated_at';
-const DRIVE_FILE_NAME = 'ders-defteri-sync.json';
-const SYNC_SETTINGS_KEYS = ['googleClientId', 'googleConnected', 'driveFileId', 'lastSyncedAt', 'lastSyncError'];
 
 let localUpdatedAt = 0;
 try { localUpdatedAt = Number(localStorage.getItem(STORAGE_UPDATED_AT) || 0); } catch(e) { localUpdatedAt = 0; }
-let tokenClient = null;
-let accessToken = null;
-let accessTokenExpiry = 0;
-let syncInFlight = false;
-let syncTimer = null;
 
 function touchLocalData() {
   localUpdatedAt = Date.now();
   try { localStorage.setItem(STORAGE_UPDATED_AT, String(localUpdatedAt)); } catch(e) {}
-  scheduleSync();
 }
 
 function loadStudents() {
@@ -520,9 +511,6 @@ function init() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
-  initGoogleSync();
-  setInterval(() => runSync(true), 90000);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) runSync(true); });
 }
 
 function studentsToday() {
@@ -823,19 +811,20 @@ function openLessonNote(studentId, date) {
   });
 }
 
+function backupReminder() {
+  const hasData = students.length > 0;
+  if (!hasData) return null;
+  if (!settings.lastBackupAt) return { warn: true, text: 'Henüz hiç yedek almadın. Verilerini kaybetmemek için bir yedek al.' };
+  const days = Math.floor((Date.now() - settings.lastBackupAt) / 86400000);
+  const changedSince = localUpdatedAt > settings.lastBackupAt;
+  const dayLabel = days <= 0 ? 'bugün' : days === 1 ? 'dün' : `${days} gün önce`;
+  if (changedSince && days >= 3) return { warn: true, text: `Son yedek ${dayLabel} alındı ve o zamandan beri değişiklik yaptın. Yeni bir yedek almanı öneririz.` };
+  return { warn: false, text: `Son yedek: ${dayLabel}` };
+}
+
 function renderSettings() {
-  const connected = !!(settings.googleClientId && settings.googleConnected);
-  const hasId = !!settings.googleClientId;
-  let syncBody = `<div class="field"><label>Google OAuth Client ID</label><input id="gsync-clientid" placeholder="xxxx.apps.googleusercontent.com" value="${escapeAttr(settings.googleClientId || '')}"></div>`;
-  if (!hasId) {
-    syncBody += `<button class="btn" id="gsync-save-id">Client ID'yi kaydet</button>`;
-  } else if (!connected) {
-    syncBody += `<div class="settings-actions"><button class="btn primary" id="gsync-connect">Google ile bağlan</button></div>`;
-  } else {
-    syncBody += `<div class="stats-line">Google Drive'a bağlı${settings.lastSyncedAt ? ' · Son senkron: ' + new Date(settings.lastSyncedAt).toLocaleString('tr-TR') : ' · Henüz senkron olmadı'}</div><div class="settings-actions" style="margin-top:10px"><button class="btn primary" id="gsync-now">Şimdi senkronize et</button><button class="btn danger" id="gsync-disconnect">Bağlantıyı kes</button></div>`;
-  }
-  if (settings.lastSyncError) syncBody += `<div class="note" style="margin-top:8px;color:var(--warn)">${escapeHtml(settings.lastSyncError)}</div>`;
-  return `<section><div class="section-label">AYARLAR</div><div class="card"><div class="settings-row"><div><strong>Bildirimler</strong><small>Ders zamanı yaklaşınca hatırlat</small></div><button class="toggle-btn ${notifEnabled ? 'active-yes' : ''}" id="settings-notif">${notifEnabled ? 'Açık' : 'Kapalı'}</button></div><div class="settings-row"><div><strong>Görünüm</strong><small>Sistem, açık veya koyu tema</small></div><select id="theme-select"><option value="system">Sistem</option><option value="light">Açık</option><option value="dark">Koyu</option></select></div></div></section><section><div class="section-label">SENKRONİZASYON</div><div class="card" style="padding:14px">${syncBody}</div></section><section><div class="section-label">VERİLER</div><div class="card settings-actions" style="padding:14px"><button class="btn primary" id="export-data">Verileri yedekle</button><button class="btn" id="import-data">Yedekten geri yükle</button><input type="file" id="import-file" accept="application/json" hidden></div></section>`;
+  const reminder = backupReminder();
+  return `<section><div class="section-label">AYARLAR</div><div class="card"><div class="settings-row"><div><strong>Bildirimler</strong><small>Ders zamanı yaklaşınca hatırlat</small></div><button class="toggle-btn ${notifEnabled ? 'active-yes' : ''}" id="settings-notif">${notifEnabled ? 'Açık' : 'Kapalı'}</button></div><div class="settings-row"><div><strong>Görünüm</strong><small>Sistem, açık veya koyu tema</small></div><select id="theme-select"><option value="system">Sistem</option><option value="light">Açık</option><option value="dark">Koyu</option></select></div></div></section><section><div class="section-label">VERİLER</div>${reminder ? `<div class="${reminder.warn ? 'warn-banner' : 'stats-line'}" style="margin-bottom:10px${reminder.warn ? '' : ';padding:0 2px'}">${reminder.warn ? '<span class="warn-dot"></span><span>' + escapeHtml(reminder.text) + '</span>' : escapeHtml(reminder.text)}</div>` : ''}<div class="card settings-actions" style="padding:14px"><button class="btn primary" id="export-data">Verileri yedekle</button><button class="btn" id="import-data">Yedekten geri yükle</button><input type="file" id="import-file" accept="application/json" hidden></div></section>`;
 }
 
 function bindSettingsEvents() {
@@ -846,33 +835,13 @@ function bindSettingsEvents() {
   document.getElementById('export-data').addEventListener('click', exportData);
   document.getElementById('import-data').addEventListener('click', () => document.getElementById('import-file').click());
   document.getElementById('import-file').addEventListener('change', importData);
-  const saveId = document.getElementById('gsync-save-id');
-  if (saveId) saveId.addEventListener('click', () => {
-    const val = document.getElementById('gsync-clientid').value.trim();
-    settings.googleClientId = val;
-    persistSettings();
-    if (val) initGoogleSync();
-    render();
-  });
-  const connectBtn = document.getElementById('gsync-connect');
-  if (connectBtn) connectBtn.addEventListener('click', () => {
-    const val = document.getElementById('gsync-clientid').value.trim();
-    if (val !== settings.googleClientId) { settings.googleClientId = val; persistSettings(); }
-    connectGoogle();
-  });
-  const nowBtn = document.getElementById('gsync-now');
-  if (nowBtn) nowBtn.addEventListener('click', () => runSync());
-  const discBtn = document.getElementById('gsync-disconnect');
-  if (discBtn) discBtn.addEventListener('click', disconnectGoogle);
   document.querySelectorAll('[data-history-note]').forEach(b => b.addEventListener('click', () => openLessonNote(b.dataset.historyNote, b.dataset.historyDate)));
   const back = document.getElementById('detail-back');
   if (back) back.addEventListener('click', () => { activeStudentId = null; render(); });
 }
 
 function exportData() {
-  const exportSettings = { ...settings };
-  SYNC_SETTINGS_KEYS.forEach(k => delete exportSettings[k]);
-  const payload = { version: 2, exportedAt: new Date().toISOString(), students, attendance, settings: { ...exportSettings, notifEnabled } };
+  const payload = { version: 2, exportedAt: new Date().toISOString(), students, attendance, settings: { ...settings, notifEnabled } };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -880,6 +849,9 @@ function exportData() {
   link.download = `ders-defteri-${todayKey()}.json`;
   link.click();
   URL.revokeObjectURL(url);
+  settings.lastBackupAt = Date.now();
+  persistSettings();
+  render();
 }
 
 function importData(event) {
@@ -893,11 +865,9 @@ function importData(event) {
       modal = { title: 'Yedeği geri yükle', message: 'Mevcut verilerin üzerine yazılacak. Devam etmek istiyor musun?', actions: [{ label: 'Vazgeç', cls: '' }, { label: 'Geri yükle', cls: 'primary', onClick: () => {
         students = payload.students.map(s => ({ ...s, grade: s.grade || '', subject: s.subject || '', note: s.note || '' }));
         attendance = payload.attendance;
-        const importedSettings = payload.settings || {};
-        const keepSync = {};
-        SYNC_SETTINGS_KEYS.forEach(k => { if (settings[k] !== undefined) keepSync[k] = settings[k]; });
-        settings = { ...importedSettings, ...keepSync };
-        notifEnabled = !!importedSettings.notifEnabled;
+        settings = payload.settings || {};
+        notifEnabled = !!settings.notifEnabled;
+        settings.lastBackupAt = Date.now();
         persistStudents(); persistAttendance(); persistSettings(); applyTheme();
         touchLocalData();
         activeStudentId = null; render();
@@ -1044,168 +1014,6 @@ function escapeHtml(str) {
 }
 function escapeAttr(str) {
   return escapeHtml(str).replace(/"/g, '&quot;');
-}
-
-/* ---- Google Drive senkron (appDataFolder) ---- */
-
-function initGoogleSync() {
-  if (!settings.googleClientId) return;
-  const start = () => {
-    if (typeof google === 'undefined' || !google.accounts) { setTimeout(start, 300); return; }
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: settings.googleClientId,
-      scope: 'https://www.googleapis.com/auth/drive.appdata',
-      callback: () => {}
-    });
-    if (settings.googleConnected) runSync(true);
-  };
-  start();
-}
-
-function connectGoogle() {
-  if (!settings.googleClientId || typeof google === 'undefined') return;
-  if (!tokenClient) { initGoogleSync(); setTimeout(connectGoogle, 400); return; }
-  tokenClient.callback = (resp) => {
-    if (resp.error) {
-      modal = { title: 'Bağlantı hatası', message: 'Google ile bağlanılamadı: ' + resp.error, actions: [{ label: 'Tamam', cls: '' }] };
-      render();
-      return;
-    }
-    accessToken = resp.access_token;
-    accessTokenExpiry = Date.now() + (resp.expires_in * 1000) - 60000;
-    settings.googleConnected = true;
-    persistSettings();
-    runSync();
-  };
-  tokenClient.requestAccessToken({ prompt: 'consent' });
-}
-
-function disconnectGoogle() {
-  if (accessToken && typeof google !== 'undefined' && google.accounts) {
-    try { google.accounts.oauth2.revoke(accessToken, () => {}); } catch(e) {}
-  }
-  accessToken = null;
-  settings.googleConnected = false;
-  persistSettings();
-  render();
-}
-
-function ensureAccessToken() {
-  return new Promise((resolve, reject) => {
-    if (accessToken && Date.now() < accessTokenExpiry) return resolve();
-    if (!tokenClient) return reject(new Error('Google istemcisi hazır değil'));
-    tokenClient.callback = (resp) => {
-      if (resp.error) { reject(new Error(resp.error)); return; }
-      accessToken = resp.access_token;
-      accessTokenExpiry = Date.now() + (resp.expires_in * 1000) - 60000;
-      resolve();
-    };
-    tokenClient.requestAccessToken({ prompt: '' });
-  });
-}
-
-function driveFetch(url, opts = {}) {
-  return fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${accessToken}` } });
-}
-
-async function driveFindOrCacheFileId() {
-  if (settings.driveFileId) return settings.driveFileId;
-  const q = encodeURIComponent(`name='${DRIVE_FILE_NAME}'`);
-  const res = await driveFetch(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&fields=files(id,name)&q=${q}`);
-  if (!res.ok) throw new Error('Drive arama hatası: ' + res.status);
-  const data = await res.json();
-  const file = (data.files || [])[0];
-  if (file) { settings.driveFileId = file.id; persistSettings(); return file.id; }
-  return null;
-}
-
-async function pushToDrive(fileId) {
-  const payload = JSON.stringify({ version: 2, updatedAt: localUpdatedAt, students, attendance });
-  let res;
-  if (fileId) {
-    res = await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: payload
-    });
-  } else {
-    const metadata = { name: DRIVE_FILE_NAME, parents: ['appDataFolder'] };
-    const boundary = 'ddsync' + Date.now();
-    const body = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n${payload}\r\n--${boundary}--`;
-    res = await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-      method: 'POST',
-      headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-      body
-    });
-  }
-  if (!res.ok) throw new Error('Drive yazma hatası: ' + res.status);
-  const data = fileId ? { id: fileId } : await res.json();
-  settings.driveFileId = data.id;
-  settings.lastSyncedAt = localUpdatedAt;
-  delete settings.lastSyncError;
-  persistSettings();
-}
-
-function applyRemoteData(remote) {
-  students = (remote.students || []).map(s => ({ ...s, grade: s.grade || '', subject: s.subject || '', note: s.note || '' }));
-  attendance = remote.attendance || {};
-  persistStudents();
-  persistAttendance();
-  localUpdatedAt = remote.updatedAt || Date.now();
-  try { localStorage.setItem(STORAGE_UPDATED_AT, String(localUpdatedAt)); } catch(e) {}
-  settings.lastSyncedAt = localUpdatedAt;
-  delete settings.lastSyncError;
-  persistSettings();
-  if (activeStudentId && !students.find(s => s.id === activeStudentId)) activeStudentId = null;
-  render();
-}
-
-function scheduleSync() {
-  if (!settings.googleConnected) return;
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => runSync(true), 2500);
-}
-
-async function runSync(silent) {
-  if (!settings.googleConnected || !settings.googleClientId) return;
-  if (syncInFlight) return;
-  syncInFlight = true;
-  try {
-    await ensureAccessToken();
-    const fileId = await driveFindOrCacheFileId();
-    let remote = null;
-    if (fileId) {
-      const res = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
-      if (res.ok) remote = await res.json();
-    }
-    const lastSynced = settings.lastSyncedAt || 0;
-    const remoteUpdatedAt = (remote && remote.updatedAt) || 0;
-    const localChanged = localUpdatedAt > lastSynced;
-    const remoteChanged = remoteUpdatedAt > lastSynced;
-
-    if (!fileId || (localChanged && !remoteChanged)) {
-      await pushToDrive(fileId);
-    } else if (remoteChanged && !localChanged) {
-      applyRemoteData(remote);
-    } else if (localChanged && remoteChanged) {
-      exportData();
-      modal = {
-        title: 'Senkron çakışması',
-        message: 'Bu cihazda ve diğer cihazda farklı değişiklikler var. Güvenlik için tüm verilerin yedeği bilgisayarına indirildi. Hangi cihazdakini esas alalım?',
-        actions: [
-          { label: 'Bu cihazdakini kullan', cls: 'primary', onClick: () => pushToDrive(fileId).then(render) },
-          { label: 'Diğer cihazdakini kullan', cls: '', onClick: () => applyRemoteData(remote) }
-        ]
-      };
-    }
-    persistSettings();
-  } catch (e) {
-    settings.lastSyncError = String((e && e.message) || e);
-    persistSettings();
-  } finally {
-    syncInFlight = false;
-    if (!silent) render();
-  }
 }
 
 init();
